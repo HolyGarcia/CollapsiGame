@@ -1,9 +1,29 @@
+"""Collapsi Game
+    -------------
+    Juego de tablero por turnos implementado con Tkinter.
+    Permite jugar Humano vs IA.
+
+    La IA utiliza el algoritmo Minimax con límite de tiempo configurable
+    para seleccionar el mejor movimiento posible en cada turno."""
+
 import tkinter as tk
 import random
+import time
+from ai.state import GameState
+from ai.minimax import minimax
+
 
 # -------------------- CLASES --------------------
 
 class Player:
+    """Representa a un jugador del juego.
+
+        Atributos:
+        - name: nombre del jugador
+        - color: color usado para dibujarlo en el tablero
+        - position: posición actual [fila, columna]
+        - first_turn: indica si es el primer turno del jugador"""
+
     def __init__(self, name, color):
         self.name = name
         self.color = color
@@ -11,6 +31,12 @@ class Player:
         self.first_turn = True
 
 class Board:
+    """Representa el tablero del juego.
+
+        Contiene:
+        - La matriz de valores de las cartas
+        - El control de cartas ya utilizadas"""
+
     def __init__(self, grid_size, values, cell_size):
         self.grid_size = grid_size
         self.values = values
@@ -19,6 +45,7 @@ class Board:
         self.board = self.create_board()
 
     def create_board(self):
+        """Crea el tablero mezclando aleatoriamente los valores disponibles."""
         shuffled = self.values.copy()
         random.shuffle(shuffled)
         b = []
@@ -36,11 +63,14 @@ class Board:
         return self.board[pos[0]][pos[1]]
 
     def mark_used(self, pos):
+        """Marca una carta como usada para que no pueda volver a pisarse."""
         self.used[pos[0]][pos[1]] = True
 
 # -------------------- MÉTODOS --------------------
 
 def place_players_on_zeros(board, players):
+    """Coloca a los jugadores inicialmente en las casillas con valor 0.
+        Se asume que existen al menos dos ceros en el tablero."""
     zeros = [] #----creo un arreglo
     for i in range(board.grid_size): #----crea las filas
         for j in range(board.grid_size): #----crea los columnas
@@ -49,16 +79,36 @@ def place_players_on_zeros(board, players):
     players[0].position = zeros[0]  #----jugador rojo
     players[1].position = zeros[1]  #----jugador verde
 
-def get_valid_moves(board, pos, steps, first_turn):
+def get_valid_moves(board, pos, steps, first_turn, players):
+    """Calcula todos los movimientos válidos para un jugador.
+
+        Parámetros:
+        - board: tablero del juego
+        - pos: posición actual del jugador
+        - steps: número de pasos permitidos
+        - first_turn: indica si es el primer turno
+        - players: lista de jugadores (para evitar casillas ocupadas)
+
+        Retorna:
+        - Lista de posiciones válidas [fila, columna]"""
+
     moves = []
     directions = [(-1,0),(1,0),(0,-1),(0,1)]
     visited = set()
 
     def dfs(r,c,remaining):
+        # Evita salir del tablero
         if r<0 or r>=board.grid_size or c<0 or c>=board.grid_size:
             return
         if board.used[r][c]:
             return
+
+        # Evitar casilla ocupada por otro jugador
+        for p in players:
+            if [r, c] == p.position and [r, c] != pos:
+                return
+
+        # Evita cartas ya usadas
         if (r,c) in visited:
             return
         visited.add((r,c))
@@ -84,6 +134,8 @@ def get_valid_moves(board, pos, steps, first_turn):
 # -------------------- LÓGICA DEL JUEGO --------------------
 
 class Game:
+    """Controla la lógica principal del juego, los turnos
+        y la interacción con la interfaz gráfica."""
     def __init__(self, root):
         self.root = root
         self.grid_size = 4
@@ -91,6 +143,8 @@ class Game:
         self.values = [0,0,4,4,1,1,1,1,2,2,2,2,3,3,3,3]
 
         # Jugadores
+        self.ai_player_name = "Verde" # Configuración de la IA
+        self.ai_time_limit = 1.0  # ⏱ # Tiempo máximo de búsqueda del Minimax (segundos)
         self.players = [Player("Rojo", "red"), Player("Verde", "green")]
         self.current_player_idx = 0
 
@@ -117,6 +171,34 @@ class Game:
         self.update_labels()
         self.canvas.bind("<Button-1>", self.select_tile)
 
+    def ai_move(self):
+        """Ejecuta el turno de la IA.
+            Obtiene el estado actual del juego y utiliza Minimax
+            para decidir el mejor movimiento posible."""
+
+        state = GameState(self.board, self.players, self.current_player_idx)
+
+        if not self.root.winfo_exists():
+            return
+
+        start_time = time.time()
+        _, best_move = minimax(
+            state,
+            depth=4,
+            maximizing=True,
+            start_time=start_time,
+            time_limit=self.ai_time_limit,
+            get_valid_moves=get_valid_moves
+        )
+
+        if best_move:
+            y, x = best_move
+            fake_event = type(
+                "Event", (),
+                {"x": x * self.cell_size + 1, "y": y * self.cell_size + 1}
+            )
+            self.select_tile(fake_event)
+
     def update_labels(self):
         for idx, player in enumerate(self.players):
             turn_text = " ← Turno" if idx == self.current_player_idx else ""
@@ -141,6 +223,9 @@ class Game:
             self.canvas.create_oval(x-15, y-15, x+15, y+15, fill=player.color)
 
     def select_tile(self, event):
+        """Maneja la selección de una casilla por parte de un jugador.
+            Valida el movimiento, actualiza el estado del juego
+            y gestiona el cambio de turno."""
         x_click = event.x // self.cell_size
         y_click = event.y // self.cell_size
         if self.board.used[y_click][x_click]:
@@ -149,7 +234,14 @@ class Game:
         player = self.players[self.current_player_idx]
         prev_value = self.board.get_value(player.position)
         steps_allowed = 4 if player.first_turn else prev_value
-        valid_moves = get_valid_moves(self.board, player.position, steps_allowed, player.first_turn)
+        # Obtiene los movimientos válidos según las reglas del juego
+        valid_moves = get_valid_moves(
+            self.board,
+            player.position,
+            steps_allowed,
+            player.first_turn,
+            self.players
+        )
 
         if [y_click, x_click] not in valid_moves:
             return
@@ -165,7 +257,7 @@ class Game:
         next_idx = 1 - self.current_player_idx
         next_player = self.players[next_idx]
         next_steps = 4 if next_player.first_turn else self.board.get_value(next_player.position)
-        next_moves = get_valid_moves(self.board, next_player.position, next_steps, next_player.first_turn)
+        next_moves = get_valid_moves(self.board, next_player.position, next_steps, next_player.first_turn, self.players)
         if not next_moves:
             winner = self.players[self.current_player_idx]
             self.labels[0].config(text=f"Jugador {winner.name} ganó!")
@@ -176,6 +268,11 @@ class Game:
         # Cambiar turno
         self.current_player_idx = next_idx
         self.update_labels()
+
+        # Si es turno de la IA
+        current_player = self.players[self.current_player_idx]
+        if current_player.name == self.ai_player_name:
+            self.root.after(500, self.ai_move)
 
     def new_game(self):
         self.board = Board(self.grid_size, self.values, self.cell_size)
