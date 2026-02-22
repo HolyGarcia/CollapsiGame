@@ -1,6 +1,7 @@
 import tkinter as tk
 import random
-import tkinter.font as tkFont
+import time
+import math
 import copy
 
 # -------------------- CLASES --------------------
@@ -40,8 +41,145 @@ class Board:
     def mark_used(self, pos):
         self.used[pos[0]][pos[1]] = True
 
-# -------------------- MÉTODOS --------------------
 
+# -------------------- ESTADO PARA IA --------------------
+
+class GameState:
+    def __init__(self, board, players, current_player_idx):
+        self.board = copy.deepcopy(board)
+        self.players = copy.deepcopy(players)
+        self.current_player_idx = current_player_idx
+
+    def clone(self):
+        return GameState(self.board, self.players, self.current_player_idx)
+
+# -------------------- IA MINIMAX --------------------
+
+NODES_EXPANDED = 0
+
+def is_terminal(state):
+    player = state.players[state.current_player_idx]
+    steps = 4 if player.first_turn else state.board.get_value(player.position)
+    moves = get_valid_moves(state.board, player.position, steps, player.first_turn)
+    return len(moves) == 0
+
+def get_actions(state):
+    player = state.players[state.current_player_idx]
+    steps = 4 if player.first_turn else state.board.get_value(player.position)
+    return get_valid_moves(state.board, player.position, steps, player.first_turn)
+
+def result(state, action):
+    new_state = state.clone()
+    player = new_state.players[new_state.current_player_idx]
+
+    new_state.board.mark_used(player.position)
+    player.position = action
+    player.first_turn = False
+
+    new_state.current_player_idx = 1 - new_state.current_player_idx
+    return new_state
+
+# -------------------- HEURISTICAS ----------------
+def evaluate(state, maximizing_player_idx):
+    player = state.players[maximizing_player_idx]
+    opponent = state.players[1 - maximizing_player_idx]
+
+    # H1 Movilidad propia
+    steps = 4 if player.first_turn else state.board.get_value(player.position)
+    h1 = len(get_valid_moves(state.board, player.position, steps, player.first_turn))
+
+    # H2 Movilidad oponente
+    steps_op = 4 if opponent.first_turn else state.board.get_value(opponent.position)
+    h2 = len(get_valid_moves(state.board, opponent.position, steps_op, opponent.first_turn))
+
+    # H3 Valor de carta actual
+    h3 = state.board.get_value(player.position)
+
+    # H4 Control centro
+    center = state.board.grid_size // 2
+    h4 = - (abs(player.position[0] - center) + abs(player.position[1] - center))
+
+    # H5 Diferencia movilidad
+    h5 = h1 - h2
+
+    # Pesos
+    w1, w2, w3, w4, w5 = 4, -5, 2, 1, 6
+
+    return w1*h1 + w2*h2 + w3*h3 + w4*h4 + w5*h5
+
+# ------------- MINIMAX + ALPHA BETA --------------
+def minimax(state, depth, alpha, beta, maximizing_player, maximizing_idx):
+    global NODES_EXPANDED
+    NODES_EXPANDED += 1
+
+    if is_terminal(state):
+        if state.current_player_idx != maximizing_idx:
+            return math.inf, None
+        else:
+            return -math.inf, None
+
+    if depth == 0:
+        return evaluate(state, maximizing_idx), None
+
+    best_move = None
+
+    if maximizing_player:
+        max_eval = -math.inf
+        for action in get_actions(state):
+            eval, _ = minimax(result(state, action), depth-1,
+                              alpha, beta, False, maximizing_idx)
+            if eval > max_eval:
+                max_eval = eval
+                best_move = action
+            alpha = max(alpha, eval)
+            if beta <= alpha:
+                break
+        return max_eval, best_move
+    else:
+        min_eval = math.inf
+        for action in get_actions(state):
+            eval, _ = minimax(result(state, action), depth-1,
+                              alpha, beta, True, maximizing_idx)
+            if eval < min_eval:
+                min_eval = eval
+                best_move = action
+            beta = min(beta, eval)
+            if beta <= alpha:
+                break
+        return min_eval, best_move
+
+# ------- PROFUNDIZACIÓN ITERATIVA (IDS) ----------
+def iterative_deepening(state, max_time):
+    start_time = time.time()
+    depth = 1
+    best_move = None
+    maximizing_idx = state.current_player_idx
+
+    while time.time() - start_time < max_time:
+        value, move = minimax(state, depth, -math.inf, math.inf, True, maximizing_idx)
+        if move is not None:
+            best_move = move
+        depth += 1
+
+    return best_move
+
+# ----------------- JUGADOR GREEDY ----------------
+def greedy_move(state):
+    best_score = -math.inf
+    best_action = None
+    idx = state.current_player_idx
+
+    for action in get_actions(state):
+        new_state = result(state, action)
+        score = evaluate(new_state, idx)
+        if score > best_score:
+            best_score = score
+            best_action = action
+
+    return best_action
+
+
+# -------------------- MÉTODOS --------------------
 def place_players_on_zeros(board, players):
     zeros = [] #----creo un arreglo
     for i in range(board.grid_size): #----crea las filas
@@ -99,9 +237,13 @@ class Game:
         self.grid_size = 4
         self.cell_size = 110
         self.values = [0,0,4,4,1,1,1,1,2,2,2,2,3,3,3,3]
+        self.ai_players = []
+        self.ai_enabled = True
+        self.ai_time_limit = 3
+        self.ai_mode = "minimax"
 
         # Jugadores
-        self.players = [Player("Rojo", "red"), Player("Verde", "green")]
+        self.players = [Player("Rojo", "red"), Player("Verde (IA)", "green")]
         self.current_player_idx = 0
         self.game_over = False
         self.ai_players = [False, False] # por defecto humano contra humano
@@ -134,8 +276,10 @@ class Game:
         # Dibujar y actualizar tablero
         self.draw_board()
         self.update_labels()
-
-        #----------INTERFAZ DEL TABLERO -------------------------
+        self.canvas.bind("<Button-1>", self.select_tile)
+        
+        if self.current_player_idx in self.ai_players:
+            self.root.after(500, self.make_ai_move)
 
     def update_labels(self):
         for idx, player in enumerate(self.players):
@@ -376,95 +520,117 @@ class Game:
         self.current_player_idx = 1 - self.current_player_idx
         self.update_labels()
 
-        if self.check_win():
-            return
-
-        # si el siguiente es IA, continuar automaticamente
-        if self.ai_players[self.current_player_idx]:
-            self.root.after(1500, self.ai_move)
-
-
-    #--------------------- IA contra IA ---------------------------
-
-    def auto_play(self, delay = 500):
-        if self.game_over:
-            return
-
-        self.ai_players = [True, True]
-        self.canvas.unbind("<Button-1>")
-        self.root.after(delay, self.ai_move)
-
-#---------------------- CHECK WINNER / GAME OVER --------------------
-
-    def check_win(self):
-        current = self.players[self.current_player_idx]
-        other = self.players[1 - self.current_player_idx]
-
-        steps = 4 if current.first_turn else self.board.get_value(current.position)
-
-        moves = get_valid_moves(
-            self.board,
-            current.position,
-            steps,
-            current.first_turn,
-            other.position,
-        )
-
-        if not moves:
-            winner = other
-            self.labels[0].config(text=f"Jugador {winner.name} Ganó!")
-            self.labels[1].config(text=f"Jugador {winner.name} Ganó!")
-            self.game_over = True
-            self.canvas.unbind("<Button-1>")
-            return True
-
-        return False
-
-#------------------------ NEW GAME -------------------------
+        if self.current_player_idx in self.ai_players:
+            self.root.after(500, self.make_ai_move)
 
     def new_game(self):
         self.board = Board(self.grid_size, self.values, self.cell_size)
         place_players_on_zeros(self.board, self.players)
+
         for p in self.players:
             p.first_turn = True
+
         self.current_player_idx = 0
         self.game_over = False
         self.draw_board()
         self.update_labels()
 
-# -------------------- Iniciar partida segun Modo -------------------
+        if 0 in self.ai_players and 1 in self.ai_players:
+            self.canvas.unbind("<Button-1>")
+        else:
+            self.canvas.bind("<Button-1>", self.select_tile)
 
-    def start_game(self, ai_players):
-        self.ai_players = ai_players
-        self.new_game()
-        self.update_labels()
+        if self.current_player_idx in self.ai_players:
+            self.root.after(300, self.make_ai_move)
+        
+    
+    def make_ai_move(self):
+        state = GameState(self.board, self.players, self.current_player_idx)
+        if self.ai_mode == "minimax":
+            move = iterative_deepening(state, self.ai_time_limit)
 
-        if self.check_win():
+        elif self.ai_mode == "ai_vs_greedy":
+            if self.current_player_idx == 0:
+                move = iterative_deepening(state, self.ai_time_limit)
+            else:
+                move = greedy_move(state)
+
+        if move is None:
             return
 
-        if self.ai_players[0] and self.ai_players[1]:
+        player = self.players[self.current_player_idx]
 
-            #IA vs IA
+        self.board.mark_used(player.position)
+        player.position = move
+        player.first_turn = False
+
+        self.draw_board()
+        self.update_labels()
+
+        next_idx = 1 - self.current_player_idx
+        next_player = self.players[next_idx]
+        next_steps = 4 if next_player.first_turn else self.board.get_value(next_player.position)
+        next_moves = get_valid_moves(self.board, next_player.position, next_steps, next_player.first_turn)
+
+        if not next_moves:
+            winner = self.players[self.current_player_idx]
+            self.labels[0].config(text=f"Jugador {winner.name} ganó!")
+            self.labels[1].config(text=f"Jugador {winner.name} ganó!")
             self.canvas.unbind("<Button-1>")
-            self.root.after(500, self.auto_play)
-        elif self.ai_players[0] == False and self.ai_players[1] == True:
+            return
 
-            # Humano vs IA
-            self.canvas.bind("<Button-1>", self.select_tile)
-        else:
-
-            # Otros modos
-            self.canvas.bind("<Button-1>", self.select_tile)
-
+        self.current_player_idx = next_idx
+        self.update_labels()    
+        
+        if self.current_player_idx in self.ai_players:
+            self.root.after(300, self.make_ai_move)
 
 # -------------------- CANVAS DEL JUEGO --------------------
 
-if __name__ == "__main__":
+def start_game(mode):
+    menu.destroy()
+
     root = tk.Tk()
     root.title("Collapsi Game")
-
+    
     game = Game(root)
+
+    if mode == "human_vs_ai":
+        game.players[0].name = "Rojo (Humano)"
+        game.players[1].name = "Verde (Minimax)"
+        game.ai_players = [1]
+        game.ai_mode = "minimax"
+
+    elif mode == "ai_vs_greedy":
+        game.players[0].name = "Rojo (Minimax)"
+        game.players[1].name = "Verde (Greedy)"
+        game.ai_players = [0, 1]
+        game.ai_mode = "ai_vs_greedy"
+    game.update_labels()
+    
+    if mode == "ai_vs_greedy":
+        game.canvas.unbind("<Button-1>")
+
+    if game.current_player_idx in game.ai_players:
+        root.after(300, game.make_ai_move)
+
     root.mainloop()
 
 
 
+menu = tk.Tk()
+menu.title("Seleccionar modo de juego")
+menu.geometry("300x200")
+
+label = tk.Label(menu, text="Selecciona modo de juego", font=("Arial",12))
+label.pack(pady=20)
+
+btn1 = tk.Button(menu, text="Jugar contra IA (Minimax)",
+                 command=lambda: start_game("human_vs_ai"))
+btn1.pack(pady=10)
+
+btn2 = tk.Button(menu, text="IA vs Greedy",
+                 command=lambda: start_game("ai_vs_greedy"))
+btn2.pack(pady=10)
+
+menu.mainloop()
