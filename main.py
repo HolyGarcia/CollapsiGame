@@ -1,7 +1,6 @@
 import tkinter as tk
 import random
-import time
-import math
+import tkinter.font as tkFont
 import copy
 import time
 
@@ -44,145 +43,8 @@ class Board:
     def mark_used(self, pos):
         self.used[pos[0]][pos[1]] = True
 
-
-# -------------------- ESTADO PARA IA --------------------
-
-class GameState:
-    def __init__(self, board, players, current_player_idx):
-        self.board = copy.deepcopy(board)
-        self.players = copy.deepcopy(players)
-        self.current_player_idx = current_player_idx
-
-    def clone(self):
-        return GameState(self.board, self.players, self.current_player_idx)
-
-# -------------------- IA MINIMAX --------------------
-
-NODES_EXPANDED = 0
-
-def is_terminal(state):
-    player = state.players[state.current_player_idx]
-    steps = 4 if player.first_turn else state.board.get_value(player.position)
-    moves = get_valid_moves(state.board, player.position, steps, player.first_turn)
-    return len(moves) == 0
-
-def get_actions(state):
-    player = state.players[state.current_player_idx]
-    steps = 4 if player.first_turn else state.board.get_value(player.position)
-    return get_valid_moves(state.board, player.position, steps, player.first_turn)
-
-def result(state, action):
-    new_state = state.clone()
-    player = new_state.players[new_state.current_player_idx]
-
-    new_state.board.mark_used(player.position)
-    player.position = action
-    player.first_turn = False
-
-    new_state.current_player_idx = 1 - new_state.current_player_idx
-    return new_state
-
-# -------------------- HEURISTICAS ----------------
-def evaluate(state, maximizing_player_idx):
-    player = state.players[maximizing_player_idx]
-    opponent = state.players[1 - maximizing_player_idx]
-
-    # H1 Movilidad propia
-    steps = 4 if player.first_turn else state.board.get_value(player.position)
-    h1 = len(get_valid_moves(state.board, player.position, steps, player.first_turn))
-
-    # H2 Movilidad oponente
-    steps_op = 4 if opponent.first_turn else state.board.get_value(opponent.position)
-    h2 = len(get_valid_moves(state.board, opponent.position, steps_op, opponent.first_turn))
-
-    # H3 Valor de carta actual
-    h3 = state.board.get_value(player.position)
-
-    # H4 Control centro
-    center = state.board.grid_size // 2
-    h4 = - (abs(player.position[0] - center) + abs(player.position[1] - center))
-
-    # H5 Diferencia movilidad
-    h5 = h1 - h2
-
-    # Pesos
-    w1, w2, w3, w4, w5 = 4, -5, 2, 1, 6
-
-    return w1*h1 + w2*h2 + w3*h3 + w4*h4 + w5*h5
-
-# ------------- MINIMAX + ALPHA BETA --------------
-def minimax(state, depth, alpha, beta, maximizing_player, maximizing_idx):
-    global NODES_EXPANDED
-    NODES_EXPANDED += 1
-
-    if is_terminal(state):
-        if state.current_player_idx != maximizing_idx:
-            return math.inf, None
-        else:
-            return -math.inf, None
-
-    if depth == 0:
-        return evaluate(state, maximizing_idx), None
-
-    best_move = None
-
-    if maximizing_player:
-        max_eval = -math.inf
-        for action in get_actions(state):
-            eval, _ = minimax(result(state, action), depth-1,
-                              alpha, beta, False, maximizing_idx)
-            if eval > max_eval:
-                max_eval = eval
-                best_move = action
-            alpha = max(alpha, eval)
-            if beta <= alpha:
-                break
-        return max_eval, best_move
-    else:
-        min_eval = math.inf
-        for action in get_actions(state):
-            eval, _ = minimax(result(state, action), depth-1,
-                              alpha, beta, True, maximizing_idx)
-            if eval < min_eval:
-                min_eval = eval
-                best_move = action
-            beta = min(beta, eval)
-            if beta <= alpha:
-                break
-        return min_eval, best_move
-
-# ------- PROFUNDIZACIÓN ITERATIVA (IDS) ----------
-def iterative_deepening(state, max_time):
-    start_time = time.time()
-    depth = 1
-    best_move = None
-    maximizing_idx = state.current_player_idx
-
-    while time.time() - start_time < max_time:
-        value, move = minimax(state, depth, -math.inf, math.inf, True, maximizing_idx)
-        if move is not None:
-            best_move = move
-        depth += 1
-
-    return best_move
-
-# ----------------- JUGADOR GREEDY ----------------
-def greedy_move(state):
-    best_score = -math.inf
-    best_action = None
-    idx = state.current_player_idx
-
-    for action in get_actions(state):
-        new_state = result(state, action)
-        score = evaluate(new_state, idx)
-        if score > best_score:
-            best_score = score
-            best_action = action
-
-    return best_action
-
-
 # -------------------- MÉTODOS --------------------
+
 def place_players_on_zeros(board, players):
     zeros = []
     for i in range(board.grid_size):
@@ -228,10 +90,6 @@ class Game:
         self.grid_size = 4
         self.cell_size = 110
         self.values = [0,0,4,4,1,1,1,1,2,2,2,2,3,3,3,3]
-        self.ai_players = []
-        self.ai_enabled = True
-        self.ai_time_limit = 3
-        self.ai_mode = "minimax"
 
         # Configuración heurística y pesos
         self.heuristic_type = 4
@@ -277,7 +135,6 @@ class Game:
         self.update_labels()
 
     # -------------------- LABELS / BOARD --------------------
-
     def update_labels(self):
         for idx, player in enumerate(self.players):
             turn_text = " ← Turno" if idx == self.current_player_idx else ""
